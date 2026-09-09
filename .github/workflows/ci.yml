@@ -37,13 +37,15 @@ jobs:
         run: ruff check . --select E4,E7,E9,F,W --output-format=github
 
   test:
-    name: Build ${{ matrix.os }} · Python ${{ matrix.python-version }}
-    runs-on: ${{ matrix.os }}
+    # Solo Windows: pet.py usa wm_attributes("-transparentcolor"), un atributo
+    # de Tk exclusivo de Windows, así que la app no corre en Linux/macOS.
+    # Solo los extremos del rango soportado: si algo rompe, rompe ahí.
+    name: Build · Python ${{ matrix.python-version }}
+    runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.11", "3.13"]
 
     steps:
       - uses: actions/checkout@v7
@@ -61,11 +63,6 @@ jobs:
 
       - name: Comprobar sintaxis
         run: python -m compileall -q . -x "[.]venv"
-
-      # tkinter necesita las libs de Tcl/Tk en los runners Linux.
-      - name: Instalar Tcl/Tk (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y python3-tk
 
       # pet.py solo crea la ventana bajo `if __name__ == "__main__"`,
       # así que importarlo valida las dependencias sin abrir una GUI.
