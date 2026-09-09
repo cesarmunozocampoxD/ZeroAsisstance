@@ -71,16 +71,20 @@ jobs:
           fi
           echo "Spec recuperada ($(wc -l < .agent/spec.md) líneas)."
 
-      - name: Preparar la rama de trabajo
+      # claude-code-action SIEMPRE crea su propia rama y se cambia a ella; sin `base_branch`
+      # la saca de la rama por defecto (main) y descarta el trabajo previo. Aquí decidimos
+      # de dónde debe salir: de la rama de trabajo si ya existe, o de develop la primera vez.
+      - name: Decidir la base de trabajo
+        id: prep
         run: |
           set -euo pipefail
           git fetch origin "$BRANCH" 2>/dev/null || true
           if git rev-parse --verify "origin/$BRANCH" >/dev/null 2>&1; then
-            git checkout -B "$BRANCH" "origin/$BRANCH"
+            echo "base=$BRANCH" >> "$GITHUB_OUTPUT"
             echo "Continuando sobre la rama existente $BRANCH."
           else
-            git checkout -b "$BRANCH"
-            echo "Rama $BRANCH creada desde $BASE."
+            echo "base=$BASE" >> "$GITHUB_OUTPUT"
+            echo "Primera pasada: se partirá de $BASE."
           fi
 
       - uses: anthropics/claude-code-action@v1
@@ -88,6 +92,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
           track_progress: "true"
+          base_branch: ${{ steps.prep.outputs.base }}
           prompt: |
             Eres el agente DEVELOPER. Implementas la spec aprobada del issue
             #${{ github.event.issue.number }}.
@@ -140,6 +145,16 @@ jobs:
           git commit -m "feat: implementar spec del issue #${ISSUE}
 
           Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+          # La action nos deja en SU rama, no en la nuestra. Si por lo que sea no desciende
+          # de la rama de trabajo, el push seria non-fast-forward: mejor decirlo claro.
+          git fetch origin "$BRANCH" 2>/dev/null || true
+          if git rev-parse --verify "origin/$BRANCH" >/dev/null 2>&1; then
+            if ! git merge-base --is-ancestor "origin/$BRANCH" HEAD; then
+              echo "::error::HEAD ($(git rev-parse --abbrev-ref HEAD)) no desciende de origin/$BRANCH; el trabajo previo se perderia. Revisa base_branch."
+              exit 1
+            fi
+          fi
+
           git push origin "HEAD:$BRANCH"
 
   # ── Fase 2 · Tester ─────────────────────────────────────────────────────────────────────
@@ -181,6 +196,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
           track_progress: "true"
+          base_branch: agent/issue-${{ github.event.issue.number }}
           prompt: |
             Eres el agente TESTER. El developer ya implementó la spec del issue
             #${{ github.event.issue.number }} (está en `.agent/spec.md`). Tu trabajo es dejar
@@ -251,6 +267,16 @@ jobs:
           git commit -m "test: cobertura de la spec del issue #${ISSUE}
 
           Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+          # La action nos deja en SU rama, no en la nuestra. Si por lo que sea no desciende
+          # de la rama de trabajo, el push seria non-fast-forward: mejor decirlo claro.
+          git fetch origin "$BRANCH" 2>/dev/null || true
+          if git rev-parse --verify "origin/$BRANCH" >/dev/null 2>&1; then
+            if ! git merge-base --is-ancestor "origin/$BRANCH" HEAD; then
+              echo "::error::HEAD ($(git rev-parse --abbrev-ref HEAD)) no desciende de origin/$BRANCH; el trabajo previo se perderia. Revisa base_branch."
+              exit 1
+            fi
+          fi
+
           git push origin "HEAD:$BRANCH"
 
   # ── Fase 3 · Reviewer ───────────────────────────────────────────────────────────────────
@@ -287,6 +313,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
           track_progress: "true"
+          base_branch: agent/issue-${{ github.event.issue.number }}
           prompt: |
             Eres el agente REVIEWER. Revisas el trabajo hecho para el issue
             #${{ github.event.issue.number }} ANTES de que se abra el PR.
