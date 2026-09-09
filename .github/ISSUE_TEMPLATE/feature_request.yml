@@ -1,7 +1,7 @@
 name: "✨ Nueva funcionalidad"
 description: Propón una mejora o una función nueva.
 title: "[Feature]: "
-labels: ["enhancement"]
+labels: ["feature", "specify"]
 body:
   - type: textarea
     id: problema

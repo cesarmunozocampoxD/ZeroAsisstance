@@ -1,7 +1,7 @@
 name: "🐛 Reporte de bug"
 description: Informa un comportamiento incorrecto de la mascota virtual.
 title: "[Bug]: "
-labels: ["bug", "triage"]
+labels: ["bug", "specify"]
 body:
   - type: markdown
     attributes:
