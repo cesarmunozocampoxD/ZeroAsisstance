@@ -25,8 +25,9 @@ concurrency:
 
 jobs:
   specify:
-    # Cubre los dos caminos: la label puesta por la plantilla al crear el issue (`opened`) y la
-    # puesta a mano después (`labeled`). En `opened` no existe `github.event.label`.
+    # El camino normal es `labeled`: las plantillas ya no aplican `specify`, se pone a mano.
+    # La rama `opened` cubre el caso de crear el issue con la label desde el arranque (por
+    # ejemplo `gh issue create --label specify`), donde `github.event.label` no existe.
     if: >
       (github.event.action == 'labeled' && github.event.label.name == 'specify') ||
       (github.event.action == 'opened' && contains(github.event.issue.labels.*.name, 'specify'))
