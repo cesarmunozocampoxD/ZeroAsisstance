@@ -128,6 +128,7 @@ jobs:
       - name: Commit y push del código
         env:
           ISSUE: ${{ github.event.issue.number }}
+          BASE_USED: ${{ steps.prep.outputs.base }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -138,6 +139,13 @@ jobs:
           git add -A -- . ':(exclude).agent'
 
           if git diff --cached --quiet; then
+            # En una continuación (la rama ya existía) que el developer no cambie nada es lo
+            # esperable: el trabajo ya estaba hecho y solo se está relanzando el resto del
+            # pipeline. En la primera pasada, en cambio, significa que no produjo nada.
+            if [ "$BASE_USED" = "$BRANCH" ]; then
+              echo "::notice::El developer no cambió nada: la rama ya traía la implementación. Se continúa con el tester."
+              exit 0
+            fi
             echo "::error::El developer no produjo ningún cambio. Revisa su comentario de progreso en el issue #${ISSUE}."
             exit 1
           fi
@@ -156,6 +164,39 @@ jobs:
           fi
 
           git push origin "HEAD:$BRANCH"
+
+      # Un fallo no debe ser silencioso: sin esto solo te enteras por el email de Actions.
+      - name: Avisar del fallo en el issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+          FASE: developer
+        run: |
+          set -euo pipefail
+          MARKER="<!-- pipeline-error:${ISSUE} -->"
+          RUN_URL="https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+
+          BODY_FILE="$RUNNER_TEMP/error.md"
+          {
+            printf '%s\n' "$MARKER"
+            printf '%s\n\n' "> :warning: **El pipeline fallo en la fase \`${FASE}\`** - [ver el run](${RUN_URL})"
+            printf '%s\n\n' "La rama \`${BRANCH}\` puede haber quedado a medias; nada se ha borrado."
+            printf '%s\n' "- Si fallo el agente o fue algo transitorio: **Re-run failed jobs** en Actions relanza solo esta fase y las siguientes, sin repetir las que ya pasaron."
+            printf '%s\n' "- Si el fallo esta en el propio workflow: corrigelo, mergealo a \`main\` y vuelve a poner la label \`implement\` (un re-run usaria la version antigua del YAML)."
+          } > "$BODY_FILE"
+
+          CID=$(MARKER="$MARKER" gh api "repos/${REPO}/issues/${ISSUE}/comments" --paginate \
+                  --jq '[.[] | select(.body | contains(env.MARKER)) | .id] | last // empty')
+          if [ -n "$CID" ]; then
+            jq -n --rawfile b "$BODY_FILE" '{body:$b}' \
+              | gh api --method PATCH "repos/${REPO}/issues/comments/${CID}" --input - >/dev/null
+          else
+            jq -n --rawfile b "$BODY_FILE" '{body:$b}' \
+              | gh api --method POST "repos/${REPO}/issues/${ISSUE}/comments" --input - >/dev/null
+          fi
+          echo "Aviso de fallo publicado en el issue #${ISSUE}."
 
   # ── Fase 2 · Tester ─────────────────────────────────────────────────────────────────────
   tester:
@@ -190,6 +231,16 @@ jobs:
           MARKER="<!-- spec:${ISSUE} -->"
           MARKER="$MARKER" gh api "repos/${REPO}/issues/${ISSUE}/comments" --paginate \
             --jq '[.[] | select(.body | contains(env.MARKER)) | .body] | last // empty' > .agent/spec.md
+
+      # Para distinguir "no escribió tests" de "ya estaban escritos" en un relanzamiento.
+      - name: ¿La rama ya traía tests?
+        id: pre
+        run: |
+          if [ -d tests ]; then
+            echo "tenia_tests=si" >> "$GITHUB_OUTPUT"
+          else
+            echo "tenia_tests=no" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: anthropics/claude-code-action@v1
         with:
@@ -253,6 +304,7 @@ jobs:
       - name: Commit y push de los tests
         env:
           ISSUE: ${{ github.event.issue.number }}
+          TENIA_TESTS: ${{ steps.pre.outputs.tenia_tests }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -260,6 +312,10 @@ jobs:
           git add -A -- . ':(exclude).agent'
 
           if git diff --cached --quiet; then
+            if [ "$TENIA_TESTS" = "si" ]; then
+              echo "::notice::El tester no cambió nada: la rama ya traía la cobertura. Se continúa con el reviewer."
+              exit 0
+            fi
             echo "::error::El tester no produjo ningún cambio."
             exit 1
           fi
@@ -278,6 +334,39 @@ jobs:
           fi
 
           git push origin "HEAD:$BRANCH"
+
+      # Un fallo no debe ser silencioso: sin esto solo te enteras por el email de Actions.
+      - name: Avisar del fallo en el issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+          FASE: tester
+        run: |
+          set -euo pipefail
+          MARKER="<!-- pipeline-error:${ISSUE} -->"
+          RUN_URL="https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+
+          BODY_FILE="$RUNNER_TEMP/error.md"
+          {
+            printf '%s\n' "$MARKER"
+            printf '%s\n\n' "> :warning: **El pipeline fallo en la fase \`${FASE}\`** - [ver el run](${RUN_URL})"
+            printf '%s\n\n' "La rama \`${BRANCH}\` puede haber quedado a medias; nada se ha borrado."
+            printf '%s\n' "- Si fallo el agente o fue algo transitorio: **Re-run failed jobs** en Actions relanza solo esta fase y las siguientes, sin repetir las que ya pasaron."
+            printf '%s\n' "- Si el fallo esta en el propio workflow: corrigelo, mergealo a \`main\` y vuelve a poner la label \`implement\` (un re-run usaria la version antigua del YAML)."
+          } > "$BODY_FILE"
+
+          CID=$(MARKER="$MARKER" gh api "repos/${REPO}/issues/${ISSUE}/comments" --paginate \
+                  --jq '[.[] | select(.body | contains(env.MARKER)) | .id] | last // empty')
+          if [ -n "$CID" ]; then
+            jq -n --rawfile b "$BODY_FILE" '{body:$b}' \
+              | gh api --method PATCH "repos/${REPO}/issues/comments/${CID}" --input - >/dev/null
+          else
+            jq -n --rawfile b "$BODY_FILE" '{body:$b}' \
+              | gh api --method POST "repos/${REPO}/issues/${ISSUE}/comments" --input - >/dev/null
+          fi
+          echo "Aviso de fallo publicado en el issue #${ISSUE}."
 
   # ── Fase 3 · Reviewer ───────────────────────────────────────────────────────────────────
   reviewer:
@@ -358,6 +447,7 @@ jobs:
             --allowedTools Write
 
       - name: Publicar el review y el enlace del PR
+        id: publish
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -400,9 +490,54 @@ jobs:
             printf -- '- [Abrir el PR ➔](%s)\n' "$PR_URL"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # Un veredicto BLOCK deja el run en rojo: el review ya está publicado, pero no quiero
-          # que un pipeline con hallazgos bloqueantes se vea verde en la lista de Actions.
-          if [ "$VERDICT" = "BLOCK" ]; then
-            echo "::error::El reviewer bloqueó el cambio. Lee el review en el issue #${ISSUE}."
-            exit 1
+          echo "verdict=${VERDICT}" >> "$GITHUB_OUTPUT"
+
+          # Si una pasada anterior dejó un aviso de fallo, ya no aplica: el pipeline llegó
+          # hasta el final. Se borra para no dejar un comentario que miente.
+          EMARKER="<!-- pipeline-error:${ISSUE} -->"
+          EID=$(MARKER="$EMARKER" gh api "repos/${REPO}/issues/${ISSUE}/comments" --paginate                   --jq '[.[] | select(.body | contains(env.MARKER)) | .id] | last // empty')
+          if [ -n "$EID" ]; then
+            gh api --method DELETE "repos/${REPO}/issues/comments/${EID}" >/dev/null
+            echo "Aviso de fallo de una pasada anterior eliminado."
           fi
+
+      # El bloqueo va en su propio paso para que el aviso de fallo de abajo sepa distinguir
+      # "el pipeline se rompió" de "el reviewer encontró algo": lo segundo no es una averia.
+      - name: Bloquear si el veredicto es BLOCK
+        if: steps.publish.outputs.verdict == 'BLOCK'
+        run: |
+          echo "::error::El reviewer bloqueó el cambio. Lee el review en el issue #${{ github.event.issue.number }}."
+          exit 1
+      # Un fallo no debe ser silencioso: sin esto solo te enteras por el email de Actions.
+      - name: Avisar del fallo en el issue
+        if: failure() && steps.publish.outputs.verdict != 'BLOCK'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+          FASE: reviewer
+        run: |
+          set -euo pipefail
+          MARKER="<!-- pipeline-error:${ISSUE} -->"
+          RUN_URL="https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+
+          BODY_FILE="$RUNNER_TEMP/error.md"
+          {
+            printf '%s\n' "$MARKER"
+            printf '%s\n\n' "> :warning: **El pipeline fallo en la fase \`${FASE}\`** - [ver el run](${RUN_URL})"
+            printf '%s\n\n' "La rama \`${BRANCH}\` puede haber quedado a medias; nada se ha borrado."
+            printf '%s\n' "- Si fallo el agente o fue algo transitorio: **Re-run failed jobs** en Actions relanza solo esta fase y las siguientes, sin repetir las que ya pasaron."
+            printf '%s\n' "- Si el fallo esta en el propio workflow: corrigelo, mergealo a \`main\` y vuelve a poner la label \`implement\` (un re-run usaria la version antigua del YAML)."
+          } > "$BODY_FILE"
+
+          CID=$(MARKER="$MARKER" gh api "repos/${REPO}/issues/${ISSUE}/comments" --paginate \
+                  --jq '[.[] | select(.body | contains(env.MARKER)) | .id] | last // empty')
+          if [ -n "$CID" ]; then
+            jq -n --rawfile b "$BODY_FILE" '{body:$b}' \
+              | gh api --method PATCH "repos/${REPO}/issues/comments/${CID}" --input - >/dev/null
+          else
+            jq -n --rawfile b "$BODY_FILE" '{body:$b}' \
+              | gh api --method POST "repos/${REPO}/issues/${ISSUE}/comments" --input - >/dev/null
+          fi
+          echo "Aviso de fallo publicado en el issue #${ISSUE}."
+
