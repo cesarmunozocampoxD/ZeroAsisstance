@@ -3,10 +3,11 @@ from PIL import Image, ImageTk
 import os
 import sys
 
+from pet_logic import PetState
+
 # ── Configuración ──────────────────────────────────────────────────────────────
 TRANSPARENT_COLOR = "#0c0c0c"   # Color que tkinter tratará como "vacío"
 FRAME_DELAY       = 180         # ms entre frames de animación
-MOVE_SPEED        = 2           # píxeles que avanza por frame
 SPRITE_WIDTH      = 50         # ancho del sprite en píxeles
 SPRITE_HEIGHT     = 50         # alto del sprite en píxeles
 FLOOR_OFFSET      = 60          # distancia al borde inferior de la pantalla
@@ -14,34 +15,35 @@ FLOOR_OFFSET      = 60          # distancia al borde inferior de la pantalla
 
 
 class VirtualPet:
+    """Envoltorio de Tk: carga sprites, traduce eventos del ratón y dibuja.
+
+    Todo el cálculo (desplazamiento, rebote, salto, frames y pausa) vive en
+    `PetState`, en `pet_logic.py`.
+    """
+
     def __init__(self):
         self.root = tk.Tk()
         self._setup_window()
         self._load_frames()
 
-        self.frame_index  = 0
-        self.direction    = 1       # 1 = derecha, -1 = izquierda
-
-        # Estado del salto
-        self.is_jumping   = False
-        self.jump_dy      = 0.0
-        self.base_y       = 0
-
         # Dimensiones de pantalla
         self.screen_w = self.root.winfo_screenwidth()
         self.screen_h = self.root.winfo_screenheight()
 
-        # Posición inicial (centro-izquierda, pegado al suelo)
-        self.x = self.screen_w // 4
-        self.y = self.screen_h - SPRITE_HEIGHT - FLOOR_OFFSET
-        self.base_y = self.y
+        # Estado de la mascota, en posición inicial (centro-izquierda, al suelo)
+        self.state = PetState(
+            x=self.screen_w // 4,
+            y=self.screen_h - SPRITE_HEIGHT - FLOOR_OFFSET,
+            screen_w=self.screen_w,
+            sprite_w=SPRITE_WIDTH,
+        )
 
         # Widget de imagen
         self.label = tk.Label(self.root, bg=TRANSPARENT_COLOR, bd=0, cursor="hand2")
         self.label.pack()
 
-        # Datos de arrastre
-        self._drag = {"start_x": 0, "start_y": 0, "moved": False}
+        # Desplazamiento entre el puntero y la esquina de la ventana al arrastrar
+        self._drag = {"start_x": 0, "start_y": 0}
 
         # Bindings
         self.label.bind("<ButtonPress-1>",   self._on_press)
@@ -81,55 +83,45 @@ class VirtualPet:
 
     # ── Bucle de animación ─────────────────────────────────────────────────────
     def _animate(self):
-        # Movimiento horizontal (solo si no se está arrastrando)
-        if not self._drag.get("moved", False):
-            self.x += MOVE_SPEED * self.direction
-            if self.x + SPRITE_WIDTH >= self.screen_w:
-                self.direction = -1
-            elif self.x <= 0:
-                self.direction = 1
+        # El estado decide; aquí solo se pinta. En pausa `advance()` sigue
+        # cambiando de frame, así que la mascota se anima en el sitio.
+        self.state.advance()
 
-        # Salto (física simple)
-        if self.is_jumping:
-            self.y      += self.jump_dy
-            self.jump_dy += 3          # gravedad
-            if self.y >= self.base_y:
-                self.y           = self.base_y
-                self.is_jumping  = False
-                self.jump_dy     = 0
-
-        # Cambiar frame
-        self.frame_index = (self.frame_index + 1) % 3
-        frames = self.frames_right if self.direction >= 0 else self.frames_left
-        self.label.config(image=frames[self.frame_index])
+        frames = self.frames_right if self.state.facing_right else self.frames_left
+        self.label.config(image=frames[self.state.frame_index])
 
         # Mover ventana
-        self.root.geometry(f"{SPRITE_WIDTH}x{SPRITE_HEIGHT}+{int(self.x)}+{int(self.y)}")
+        self.root.geometry(
+            f"{SPRITE_WIDTH}x{SPRITE_HEIGHT}+{int(self.state.x)}+{int(self.state.y)}"
+        )
 
         self.root.after(FRAME_DELAY, self._animate)
 
     # ── Interacción con el ratón ───────────────────────────────────────────────
     def _on_press(self, event):
-        self._drag["start_x"] = event.x_root - self.x
-        self._drag["start_y"] = event.y_root - self.y
-        self._drag["moved"]   = False
+        self._drag["start_x"] = event.x_root - self.state.x
+        self._drag["start_y"] = event.y_root - self.state.y
+        self.state.begin_drag()
 
     def _on_drag(self, event):
-        self._drag["moved"] = True
-        self.x = event.x_root - self._drag["start_x"]
-        self.y = event.y_root - self._drag["start_y"]
-        self.base_y = self.y    # nueva posición "suelo" al soltar
+        self.state.drag_to(
+            event.x_root - self._drag["start_x"],
+            event.y_root - self._drag["start_y"],
+        )
 
     def _on_release(self, event):
-        if not self._drag["moved"]:
-            # Clic simple → saltar
-            if not self.is_jumping:
-                self.is_jumping = True
-                self.jump_dy    = -18
-        self._drag["moved"] = False
+        # Clic simple (sin arrastre) → saltar. Soltar nunca cambia la pausa.
+        self.state.end_drag()
+
+    # ── Menú contextual ────────────────────────────────────────────────────────
+    def _toggle_pause(self):
+        self.state.toggle_pause()
 
     def _show_menu(self, event):
+        # El menú se construye en cada clic derecho, así que la etiqueta se
+        # calcula aquí y siempre refleja el estado actual.
         menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label=self.state.pause_label, command=self._toggle_pause)
         menu.add_command(label="Cerrar mascota", command=self.root.destroy)
         try:
             menu.tk_popup(event.x_root, event.y_root)
