@@ -1,0 +1,49 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# ── Entornos virtuales ────────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Empaquetado / distribución (PyInstaller, setuptools) ──────────────────────
+build/
+dist/
+*.egg-info/
+*.spec
+*.manifest
+
+# ── Herramientas ──────────────────────────────────────────────────────────────
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# ── Editores / IDE ────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Sistema operativo ─────────────────────────────────────────────────────────
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# ── Local / secretos ──────────────────────────────────────────────────────────
+.env
+.env.local
+*.local
+*.log
+
+# NOTA: los sprites de assets/ SÍ se versionan; no añadas patrones de imagen aquí.

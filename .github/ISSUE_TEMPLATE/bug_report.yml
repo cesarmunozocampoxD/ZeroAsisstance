@@ -1,0 +1,84 @@
+name: "🐛 Reporte de bug"
+description: Informa un comportamiento incorrecto de la mascota virtual.
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Gracias por reportar. Rellena los campos para poder reproducir el problema.
+
+  - type: checkboxes
+    id: previo
+    attributes:
+      label: Comprobaciones previas
+      options:
+        - label: Busqué en los issues existentes y no encontré uno igual.
+          required: true
+        - label: Estoy usando la última versión de la rama `main`.
+          required: false
+
+  - type: textarea
+    id: descripcion
+    attributes:
+      label: Descripción del problema
+      description: ¿Qué ocurre? Sé concreto.
+      placeholder: La mascota desaparece al arrastrarla al segundo monitor...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduccion
+    attributes:
+      label: Pasos para reproducir
+      value: |
+        1. Ejecutar `python pet.py`
+        2. Hacer ...
+        3. Observar ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: esperado
+    attributes:
+      label: Comportamiento esperado
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Traceback / logs
+      description: Pega la salida completa de la consola. Se formatea automáticamente.
+      render: shell
+    validations:
+      required: false
+
+  - type: input
+    id: python
+    attributes:
+      label: Versión de Python
+      placeholder: "3.12.10"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: so
+    attributes:
+      label: Sistema operativo
+      options:
+        - Windows 11
+        - Windows 10
+        - Linux
+        - macOS
+        - Otro
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Contexto adicional
+      description: Capturas de pantalla, resolución, escalado de pantalla, monitores, etc.
+    validations:
+      required: false
