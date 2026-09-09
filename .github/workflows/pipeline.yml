@@ -1,0 +1,381 @@
+# Pipeline de agentes: developer -> tester -> reviewer.
+#
+# Se dispara al etiquetar un issue con `implement`, y solo si ese issue ya tiene una spec
+# publicada por el workflow `specify` (fail-closed: sin spec no se construye a ciegas).
+#
+# POR QUÉ UN SOLO WORKFLOW Y NO TRES: un PR abierto con GITHUB_TOKEN no dispara workflows
+# (protección anti-bucle de GitHub), así que encadenar fases por eventos de PR no funcionaría
+# sin un PAT o una App. Aquí las fases son JOBS encadenados con `needs`, que no dependen de
+# ningún evento: comparten estado a través de la rama `agent/issue-<n>`.
+#
+# EL PR LO ABRES TÚ. El pipeline deja la rama lista y un enlace en el comentario de review;
+# tu clic es lo que hace que CI y CodeQL corran sobre el PR.
+#
+# Cada agente SOLO edita archivos; los commits, el push y los comentarios los hacen pasos
+# deterministas. Mismo reparto que en specify.yml.
+name: Pipeline
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write       # crea y actualiza la rama de trabajo
+  issues: write         # publica los comentarios de spec/review
+  pull-requests: write  # claude-code-action lo espera en eventos de issue
+
+# A diferencia de specify, aquí NO se cancela un run en curso: matar al developer a mitad de
+# un push deja la rama a medias. Un segundo disparo espera su turno.
+concurrency:
+  group: pipeline-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+env:
+  BRANCH: agent/issue-${{ github.event.issue.number }}
+  BASE: develop
+
+jobs:
+  # ── Fase 1 · Developer ──────────────────────────────────────────────────────────────────
+  developer:
+    if: github.event.label.name == 'implement'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: develop
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # La spec vive en un comentario del issue. Se baja a un archivo para que el agente la
+      # lea: NUNCA se interpola en el prompt con ${{ }}, porque es texto escrito por terceros
+      # y acabaría inyectado dentro del propio YAML.
+      - name: Recuperar la spec del issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          mkdir -p .agent
+          MARKER="<!-- spec:${ISSUE} -->"
+          MARKER="$MARKER" gh api "repos/${REPO}/issues/${ISSUE}/comments" --paginate \
+            --jq '[.[] | select(.body | contains(env.MARKER)) | .body] | last // empty' > .agent/spec.md
+
+          if [ ! -s .agent/spec.md ]; then
+            echo "::error::El issue #${ISSUE} no tiene spec. Etiqueta primero con 'specify' y revisa el resultado."
+            exit 1
+          fi
+          echo "Spec recuperada ($(wc -l < .agent/spec.md) líneas)."
+
+      - name: Preparar la rama de trabajo
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH" 2>/dev/null || true
+          if git rev-parse --verify "origin/$BRANCH" >/dev/null 2>&1; then
+            git checkout -B "$BRANCH" "origin/$BRANCH"
+            echo "Continuando sobre la rama existente $BRANCH."
+          else
+            git checkout -b "$BRANCH"
+            echo "Rama $BRANCH creada desde $BASE."
+          fi
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
+          track_progress: "true"
+          prompt: |
+            Eres el agente DEVELOPER. Implementas la spec aprobada del issue
+            #${{ github.event.issue.number }}.
+
+            La spec está en `.agent/spec.md`. Léela primero: es el contrato. Los criterios de
+            aceptación son contra lo que se te va a revisar.
+
+            ## Reglas
+
+            - NO ejecutes `git` ni `gh`. Un paso automático posterior hace commit y push.
+            - Implementa SOLO lo que la spec pone en "Alcance / Incluye". Lo que está en
+              "No incluye" queda fuera aunque te parezca buena idea.
+            - Si la spec tiene preguntas abiertas que bloquean de verdad la implementación,
+              implementa la parte que no dependa de ellas y deja el resto documentado en
+              `.agent/notes.md`, explicando qué falta decidir y por qué. No inventes la
+              respuesta y sigas como si estuviera decidida.
+            - No escribas tests: de eso se encarga la fase siguiente.
+            - `.agent/` es un directorio de trabajo del pipeline; no se commitea.
+
+            ## Contexto del proyecto
+
+            - Mascota virtual de escritorio en Python 3.11+ con `tkinter` y `Pillow`. Todo el
+              código vive en `pet.py` (clase `VirtualPet`); los sprites en `assets/`.
+            - Solo Windows: usa `wm_attributes("-transparentcolor", ...)`, atributo de Tk
+              exclusivo de Windows. No introduzcas cambios que rompan eso ni asumas Linux.
+            - Estilo: comentarios en español, secciones separadas con cabeceras `# ── ... ──`,
+              constantes en mayúsculas al principio del archivo. Respétalo.
+            - Debe seguir pasando `ruff check . --select E4,E7,E9,F,W`.
+          claude_args: |
+            --model claude-opus-5
+            --allowedTools Edit,Write,MultiEdit
+
+      - name: Commit y push del código
+        env:
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # `.agent/` es scratch del pipeline: se excluye del commit en vez de ensuciar
+          # el .gitignore del proyecto.
+          git add -A -- . ':(exclude).agent'
+
+          if git diff --cached --quiet; then
+            echo "::error::El developer no produjo ningún cambio. Revisa su comentario de progreso en el issue #${ISSUE}."
+            exit 1
+          fi
+
+          git commit -m "feat: implementar spec del issue #${ISSUE}
+
+          Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+          git push origin "HEAD:$BRANCH"
+
+  # ── Fase 2 · Tester ─────────────────────────────────────────────────────────────────────
+  tester:
+    needs: developer
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: agent/issue-${{ github.event.issue.number }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # tkinter necesita las libs de Tcl/Tk si algún test acaba importando pet.py.
+      - name: Instalar dependencias
+        run: |
+          sudo apt-get update && sudo apt-get install -y python3-tk
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest "ruff==0.16.6"
+
+      - name: Recuperar la spec del issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          mkdir -p .agent
+          MARKER="<!-- spec:${ISSUE} -->"
+          MARKER="$MARKER" gh api "repos/${REPO}/issues/${ISSUE}/comments" --paginate \
+            --jq '[.[] | select(.body | contains(env.MARKER)) | .body] | last // empty' > .agent/spec.md
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
+          track_progress: "true"
+          prompt: |
+            Eres el agente TESTER. El developer ya implementó la spec del issue
+            #${{ github.event.issue.number }} (está en `.agent/spec.md`). Tu trabajo es dejar
+            ese comportamiento cubierto por tests que se puedan ejecutar en CI.
+
+            ## El problema que tienes que resolver primero
+
+            `pet.py` NO es testeable tal como está: `VirtualPet.__init__` construye la ventana
+            Tk y entra en `mainloop()`, así que instanciar la clase abre una ventana y bloquea.
+            Cualquier test que solo importe el módulo es teatro: no verifica nada.
+
+            Por eso tu primera tarea es SEPARAR LA LÓGICA PURA DE LA UI. Extrae a funciones o a
+            una clase sin dependencia de tkinter la lógica que sí se puede verificar:
+
+            - el avance horizontal y el rebote en los bordes de la pantalla,
+            - la física del salto (velocidad inicial, gravedad, aterrizaje en el suelo),
+            - el ciclo de frames de la animación,
+            - y lo que la spec haya añadido, si es lógica y no pintado.
+
+            `VirtualPet` debe seguir funcionando igual: pasa a ser el envoltorio de Tk que llama
+            a esa lógica. No cambies el comportamiento observable de la app; esto es un refactor.
+
+            ## Reglas
+
+            - NO ejecutes `git` ni `gh`. Un paso automático posterior hace commit y push.
+            - Los tests van en `tests/` con pytest. NO deben importar tkinter ni abrir ventanas:
+              si un test necesita una ventana, es que la lógica no quedó bien separada.
+            - Cubre los criterios de aceptación de la spec que sean verificables sin GUI. Los
+              que no lo sean (transparencia de la ventana, siempre-encima, comportamiento con
+              varios monitores) NO los simules: anótalos en `.agent/notes.md` como verificación
+              manual pendiente.
+            - EJECUTA los tests con `pytest -q` hasta que pasen, y `ruff check . --select
+              E4,E7,E9,F,W` hasta que quede limpio. No entregues con tests en rojo.
+            - Si un test falla porque el código del developer está mal, ARREGLA el código: el
+              contrato es la spec, no lo que el developer escribió.
+            - No inventes cobertura: un test que no puede fallar no sirve. Prefiere pocos tests
+              que verifiquen comportamiento real.
+          claude_args: |
+            --model claude-opus-5
+            --allowedTools Edit,Write,MultiEdit,Bash(python:*),Bash(pytest:*),Bash(ruff:*),Bash(pip:*)
+
+      # Verificación independiente del agente: no basta con que diga que pasan.
+      - name: Verificar en frío
+        run: |
+          set -euo pipefail
+          ruff check . --select E4,E7,E9,F,W
+          if [ -d tests ]; then
+            pytest -q
+          else
+            echo "::error::El tester no creó ningún test en tests/."
+            exit 1
+          fi
+
+      - name: Commit y push de los tests
+        env:
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A -- . ':(exclude).agent'
+
+          if git diff --cached --quiet; then
+            echo "::error::El tester no produjo ningún cambio."
+            exit 1
+          fi
+
+          git commit -m "test: cobertura de la spec del issue #${ISSUE}
+
+          Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+          git push origin "HEAD:$BRANCH"
+
+  # ── Fase 3 · Reviewer ───────────────────────────────────────────────────────────────────
+  reviewer:
+    needs: tester
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: agent/issue-${{ github.event.issue.number }}
+          fetch-depth: 0
+
+      # El reviewer entra en frío: solo ve la spec y el diff, no el razonamiento de los
+      # agentes anteriores. Esa es justamente la idea.
+      - name: Preparar spec y diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          mkdir -p .agent
+          MARKER="<!-- spec:${ISSUE} -->"
+          MARKER="$MARKER" gh api "repos/${REPO}/issues/${ISSUE}/comments" --paginate \
+            --jq '[.[] | select(.body | contains(env.MARKER)) | .body] | last // empty' > .agent/spec.md
+
+          git fetch origin "$BASE"
+          git diff "origin/${BASE}...HEAD" > .agent/diff.patch
+          echo "Diff de $(git rev-list --count "origin/${BASE}..HEAD") commits, $(wc -l < .agent/diff.patch) líneas."
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
+          track_progress: "true"
+          prompt: |
+            Eres el agente REVIEWER. Revisas el trabajo hecho para el issue
+            #${{ github.event.issue.number }} ANTES de que se abra el PR.
+
+            Entrada: `.agent/spec.md` (el contrato) y `.agent/diff.patch` (el cambio completo
+            contra `develop`). También puedes leer el árbol de archivos para ver el resultado
+            final en contexto.
+
+            Tu ÚNICO entregable es el archivo `.agent/review.md`. NO ejecutes `git` ni `gh`, no
+            publiques comentarios y NO modifiques código: si algo está mal, se reporta, no se
+            arregla aquí.
+
+            ## Qué revisar, en este orden
+
+            1. **Cumplimiento de la spec.** Recorre los criterios de aceptación uno por uno y di
+               si cada uno está cubierto. Un criterio sin cubrir es BLOQUEANTE.
+            2. **Corrección.** Bugs reales, con el caso concreto que los dispara. Presta
+               atención a la aritmética de posición y salto, a los límites de pantalla, y a
+               duplicar el bucle `after()` de tkinter.
+            3. **Alcance.** ¿Se coló algo que la spec ponía en "No incluye"? ¿Se rompió el
+               solo-Windows (`-transparentcolor`)?
+            4. **Tests.** ¿Verifican comportamiento real o son tests que no pueden fallar?
+            5. **Convenciones.** Comentarios en español, estilo del archivo, sin dependencias
+               nuevas no justificadas.
+
+            No inventes problemas para parecer riguroso: si el cambio está bien, dilo. Un review
+            con hallazgos falsos es peor que uno corto.
+
+            ## Formato EXACTO de `.agent/review.md`
+
+            La primera línea debe ser exactamente una de estas dos:
+
+            VERDICT: PASS
+            VERDICT: BLOCK
+
+            `BLOCK` si hay algún criterio de aceptación sin cubrir o algún bug real. Debajo,
+            markdown libre: resumen en dos líneas, luego los hallazgos ordenados de más a menos
+            grave, cada uno con archivo y línea y el escenario concreto que falla. Cierra con
+            una checklist de los criterios de aceptación marcando cuáles se cumplen.
+          claude_args: |
+            --model claude-opus-5
+            --allowedTools Write
+
+      - name: Publicar el review y el enlace del PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -s .agent/review.md ]; then
+            echo "::error::El reviewer no generó .agent/review.md."
+            exit 1
+          fi
+
+          VERDICT=$(head -1 .agent/review.md | grep -oE 'PASS|BLOCK' || echo "DESCONOCIDO")
+          MARKER="<!-- review:${ISSUE} -->"
+          PR_URL="https://github.com/${REPO}/compare/${BASE}...${BRANCH}?expand=1"
+
+          BODY_FILE="$RUNNER_TEMP/review.md"
+          {
+            printf '%s\n' "$MARKER"
+            printf '%s\n\n' "> Review del pipeline · veredicto: **${VERDICT}** · rama \`${BRANCH}\`"
+            printf '%s\n\n' "> **[Abrir el PR ➔](${PR_URL})** — el PR lo abres tú: uno creado por el bot no dispararia CI ni CodeQL."
+            cat .agent/review.md
+          } > "$BODY_FILE"
+
+          CID=$(MARKER="$MARKER" gh api "repos/${REPO}/issues/${ISSUE}/comments" --paginate \
+                  --jq '[.[] | select(.body | contains(env.MARKER)) | .id] | last // empty')
+
+          if [ -n "$CID" ]; then
+            jq -n --rawfile b "$BODY_FILE" '{body:$b}' \
+              | gh api --method PATCH "repos/${REPO}/issues/comments/${CID}" --input - >/dev/null
+          else
+            jq -n --rawfile b "$BODY_FILE" '{body:$b}' \
+              | gh api --method POST "repos/${REPO}/issues/${ISSUE}/comments" --input - >/dev/null
+          fi
+
+          {
+            printf '## Pipeline del issue #%s\n\n' "$ISSUE"
+            printf -- '- Veredicto del review: **%s**\n' "$VERDICT"
+            printf -- '- Rama: `%s`\n' "$BRANCH"
+            printf -- '- [Abrir el PR ➔](%s)\n' "$PR_URL"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Un veredicto BLOCK deja el run en rojo: el review ya está publicado, pero no quiero
+          # que un pipeline con hallazgos bloqueantes se vea verde en la lista de Actions.
+          if [ "$VERDICT" = "BLOCK" ]; then
+            echo "::error::El reviewer bloqueó el cambio. Lee el review en el issue #${ISSUE}."
+            exit 1
+          fi
