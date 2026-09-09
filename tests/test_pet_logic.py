@@ -1,9 +1,12 @@
 """Tests de `PetState`: comportamiento de la mascota sin abrir ninguna ventana Tk.
 
-Cubren los criterios de aceptación de `.agent/spec.md` que se pueden verificar sin
-GUI. Lo que depende de Tk o del escritorio (texto real del menú, transparencia,
-siempre-encima, varios monitores) está anotado en `.agent/notes.md` como
-verificación manual pendiente.
+Cubren los criterios de aceptación del issue #6 que se pueden verificar sin GUI.
+Lo que depende de Tk o del escritorio queda como verificación manual en Windows:
+
+- Que la entrada del menú contextual muestre de verdad "Pausar" / "Reanudar"
+  (aquí solo se verifica el estado que decide esa etiqueta, no el widget).
+- La transparencia de la ventana y el comportamiento siempre-encima.
+- El tamaño real de pantalla, el escalado y el caso de varios monitores.
 """
 
 import pytest
