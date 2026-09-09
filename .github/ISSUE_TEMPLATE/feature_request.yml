@@ -1,0 +1,51 @@
+name: "✨ Nueva funcionalidad"
+description: Propón una mejora o una función nueva.
+title: "[Feature]: "
+labels: ["feature", "specify"]
+body:
+  - type: textarea
+    id: problema
+    attributes:
+      label: ¿Qué problema resuelve?
+      description: Describe la necesidad, no la solución.
+      placeholder: Cuando trabajo a pantalla completa la mascota estorba porque...
+    validations:
+      required: true
+
+  - type: textarea
+    id: propuesta
+    attributes:
+      label: Solución propuesta
+      description: Cómo debería comportarse.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternativas
+    attributes:
+      label: Alternativas consideradas
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Área afectada
+      multiple: true
+      options:
+        - Animación / sprites
+        - Interacción (arrastre, clics, menú)
+        - Ventana / transparencia
+        - Assets
+        - Empaquetado / distribución
+        - Otra
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: contribuir
+    attributes:
+      label: Participación
+      options:
+        - label: Me ofrezco a implementarlo con un pull request.
+          required: false
