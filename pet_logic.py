@@ -23,6 +23,19 @@ def _clamp(value: int, low: int, high: int) -> int:
     return max(low, min(value, high))
 
 
+def rect_to_bounds(x: int, y: int, width: int, height: int) -> tuple[int, int, int, int]:
+    """Convierte un rectángulo `(x, y, ancho, alto)` en `(min_x, max_x, min_y, max_y)`.
+
+    `pet.py` le pasa lo que devuelve `winfo_vroot*`, es decir el escritorio
+    virtual. El origen puede ser negativo (un monitor a la izquierda o encima
+    del principal empieza en coordenadas negativas), que es justo el caso que
+    rompía cuando el borde izquierdo estaba cableado a `0`.
+
+    Vive aquí, y no en `pet.py`, para poder verificarlo sin abrir una ventana.
+    """
+    return (x, x + width, y, y + height)
+
+
 class PetState:
     """Estado de la mascota y las reglas que lo hacen avanzar."""
 

@@ -3,7 +3,7 @@ from PIL import Image, ImageTk
 import os
 import sys
 
-from pet_logic import PetState
+from pet_logic import PetState, rect_to_bounds
 
 # ── Configuración ──────────────────────────────────────────────────────────────
 TRANSPARENT_COLOR = "#0c0c0c"   # Color que tkinter tratará como "vacío"
@@ -116,14 +116,15 @@ class VirtualPet:
         exteriores. `winfo_screenwidth()` no sirve aquí: Tk lo fija al abrir el
         display y no se entera de un cambio de resolución. Las variantes
         `vroot` se consultan al sistema en cada llamada.
+
+        Aquí solo se pregunta a Tk; la conversión a límites la hace
+        `rect_to_bounds()`, en `pet_logic.py`, donde sí se puede testear.
         """
-        x = self.root.winfo_vrootx()
-        y = self.root.winfo_vrooty()
-        return (
-            x,
-            x + self.root.winfo_vrootwidth(),
-            y,
-            y + self.root.winfo_vrootheight(),
+        return rect_to_bounds(
+            self.root.winfo_vrootx(),
+            self.root.winfo_vrooty(),
+            self.root.winfo_vrootwidth(),
+            self.root.winfo_vrootheight(),
         )
 
     def _refresh_bounds(self):
