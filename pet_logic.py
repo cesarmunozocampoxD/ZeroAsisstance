@@ -1,7 +1,8 @@
 """Lógica de la mascota, sin tkinter ni Pillow.
 
-`PetState` guarda la posición, la dirección, el salto, el ciclo de frames y el
-estado de pausa, y avanza un frame cada vez que se llama a `advance()`.
+`PetState` guarda la posición, la dirección, el salto, el ciclo de frames, el
+estado de pausa y los límites del área visible, y avanza un frame cada vez que
+se llama a `advance()`.
 `pet.py` se limita a dibujar lo que este objeto calcula, así que el
 comportamiento se puede verificar sin abrir una ventana Tk.
 """
@@ -17,18 +18,55 @@ LABEL_RESUME = "Reanudar"
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+def _clamp(value: int, low: int, high: int) -> int:
+    """Encierra `value` entre `low` y `high`; si el rango es vacío, gana `low`."""
+    return max(low, min(value, high))
+
+
+def rect_to_bounds(x: int, y: int, width: int, height: int) -> tuple[int, int, int, int]:
+    """Convierte un rectángulo `(x, y, ancho, alto)` en `(min_x, max_x, min_y, max_y)`.
+
+    `pet.py` le pasa lo que devuelve `winfo_vroot*`, es decir el escritorio
+    virtual. El origen puede ser negativo (un monitor a la izquierda o encima
+    del principal empieza en coordenadas negativas), que es justo el caso que
+    rompía cuando el borde izquierdo estaba cableado a `0`.
+
+    Vive aquí, y no en `pet.py`, para poder verificarlo sin abrir una ventana.
+    """
+    return (x, x + width, y, y + height)
+
+
 class PetState:
     """Estado de la mascota y las reglas que lo hacen avanzar."""
 
-    def __init__(self, x: int, y: int, screen_w: int, sprite_w: int):
+    def __init__(
+        self,
+        x: int,
+        y: int,
+        sprite_w: int,
+        sprite_h: int,
+        min_x: int,
+        max_x: int,
+        min_y: int,
+        max_y: int,
+    ):
         # Posición actual y "suelo" al que vuelve tras un salto
         self.x       = x
         self.y       = y
         self.base_y  = y
 
-        # Límites en los que rebota
-        self.screen_w = screen_w
+        # Tamaño del sprite: hace falta para saber cuándo el borde derecho (o
+        # inferior) de la mascota sale del área visible, no solo su esquina.
         self.sprite_w = sprite_w
+        self.sprite_h = sprite_h
+
+        # Área visible en la que rebota. No son fijos: `pet.py` los reevalúa
+        # mientras la app corre con `set_bounds()`, porque la resolución puede
+        # cambiar y `min_x` no vale 0 si hay un monitor a la izquierda.
+        self.min_x = min_x
+        self.max_x = max_x
+        self.min_y = min_y
+        self.max_y = max_y
 
         self.direction   = 1    # 1 = derecha, -1 = izquierda
         self.frame_index = 0
@@ -76,9 +114,9 @@ class PetState:
     def _walk(self) -> None:
         """Desplazamiento horizontal con rebote en los bordes de la pantalla."""
         self.x += MOVE_SPEED * self.direction
-        if self.x + self.sprite_w >= self.screen_w:
+        if self.x + self.sprite_w >= self.max_x:
             self.direction = -1
-        elif self.x <= 0:
+        elif self.x <= self.min_x:
             self.direction = 1
 
     def _fall(self) -> None:
@@ -89,6 +127,55 @@ class PetState:
             self.y          = self.base_y
             self.is_jumping = False
             self.jump_dy    = 0
+
+    # ── Límites de pantalla ────────────────────────────────────────────────────
+    def set_bounds(self, min_x: int, max_x: int, min_y: int, max_y: int) -> None:
+        """Actualiza el área visible contra la que rebota.
+
+        Se puede llamar en caliente: no toca la pausa, la dirección ni la
+        posición, salvo el rescate de `_rescue_if_offscreen()`.
+        """
+        self.min_x = min_x
+        self.max_x = max_x
+        self.min_y = min_y
+        self.max_y = max_y
+        self._rescue_if_offscreen()
+
+    def _is_visible(self) -> bool:
+        """True si al menos un píxel del sprite cae dentro del área visible.
+
+        El eje vertical se juzga por `base_y` —el suelo— y no por `y`: durante un
+        salto `y` es la posición en el aire, y el apex queda 63 px por encima del
+        suelo. Con `y`, un salto a menos de 13 px del borde superior haría creer
+        que la mascota se perdió y dispararía el rescate a mitad de parábola.
+        """
+        return (
+            self.x + self.sprite_w > self.min_x
+            and self.x < self.max_x
+            and self.base_y + self.sprite_h > self.min_y
+            and self.base_y < self.max_y
+        )
+
+    def _rescue_if_offscreen(self) -> None:
+        """Devuelve la mascota al borde más cercano si quedó fuera de la pantalla.
+
+        Solo actúa cuando no queda nada visible (por ejemplo al desconectar el
+        monitor en el que estaba): si asoma aunque sea un poco, vuelve caminando
+        por su cuenta, que es el comportamiento de siempre. Sin este rescate se
+        quedaría invisible y sin forma de cerrarla, porque el menú contextual
+        necesita poder hacerle clic derecho.
+        """
+        if self._is_visible():
+            return
+
+        # No se usa `move_to()`: ese fija `base_y = y`, y si el rescate cayera a
+        # mitad de un salto dejaría el suelo a la altura del aire, de forma
+        # permanente. Aquí se reubica el suelo y se arrastra `y` la misma
+        # distancia, así una parábola en curso aterriza en el suelo nuevo.
+        nuevo_base_y = _clamp(self.base_y, self.min_y, self.max_y - self.sprite_h)
+        self.y      += nuevo_base_y - self.base_y
+        self.base_y  = nuevo_base_y
+        self.x       = _clamp(self.x, self.min_x, self.max_x - self.sprite_w)
 
     # ── Acciones del usuario ───────────────────────────────────────────────────
     def toggle_pause(self) -> bool:
