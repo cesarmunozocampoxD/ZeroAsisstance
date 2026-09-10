@@ -142,12 +142,18 @@ class PetState:
         self._rescue_if_offscreen()
 
     def _is_visible(self) -> bool:
-        """True si al menos un píxel del sprite cae dentro del área visible."""
+        """True si al menos un píxel del sprite cae dentro del área visible.
+
+        El eje vertical se juzga por `base_y` —el suelo— y no por `y`: durante un
+        salto `y` es la posición en el aire, y el apex queda 63 px por encima del
+        suelo. Con `y`, un salto a menos de 13 px del borde superior haría creer
+        que la mascota se perdió y dispararía el rescate a mitad de parábola.
+        """
         return (
             self.x + self.sprite_w > self.min_x
             and self.x < self.max_x
-            and self.y + self.sprite_h > self.min_y
-            and self.y < self.max_y
+            and self.base_y + self.sprite_h > self.min_y
+            and self.base_y < self.max_y
         )
 
     def _rescue_if_offscreen(self) -> None:
@@ -162,10 +168,14 @@ class PetState:
         if self._is_visible():
             return
 
-        self.move_to(
-            _clamp(self.x, self.min_x, self.max_x - self.sprite_w),
-            _clamp(self.y, self.min_y, self.max_y - self.sprite_h),
-        )
+        # No se usa `move_to()`: ese fija `base_y = y`, y si el rescate cayera a
+        # mitad de un salto dejaría el suelo a la altura del aire, de forma
+        # permanente. Aquí se reubica el suelo y se arrastra `y` la misma
+        # distancia, así una parábola en curso aterriza en el suelo nuevo.
+        nuevo_base_y = _clamp(self.base_y, self.min_y, self.max_y - self.sprite_h)
+        self.y      += nuevo_base_y - self.base_y
+        self.base_y  = nuevo_base_y
+        self.x       = _clamp(self.x, self.min_x, self.max_x - self.sprite_w)
 
     # ── Acciones del usuario ───────────────────────────────────────────────────
     def toggle_pause(self) -> bool:

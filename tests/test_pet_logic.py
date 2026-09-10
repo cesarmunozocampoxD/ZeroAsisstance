@@ -5,7 +5,7 @@ sin GUI. Los límites de pantalla (#8) se inyectan y se cambian en caliente, que
 es justo lo que el fix hizo posible.
 
 Lo que depende de Tk o del escritorio real queda como verificación manual en
-Windows, anotada en `.agent/notes.md`:
+Windows:
 
 - Que la entrada del menú contextual muestre de verdad "Pausar" / "Reanudar"
   (aquí solo se verifica el estado que decide esa etiqueta, no el widget).
@@ -498,6 +498,43 @@ def test_si_queda_del_todo_fuera_por_abajo_se_la_devuelve_al_borde():
     pet.set_bounds(0, SCREEN_W, 0, SCREEN_H)
 
     assert pet.y == SCREEN_H - SPRITE_H
+
+
+def test_un_salto_junto_al_borde_superior_no_dispara_el_rescate():
+    """El apex está 63 px sobre el suelo (JUMP_IMPULSE=-18, GRAVITY=3).
+
+    Con el suelo a menos de 13 px del borde, el sprite entero queda por encima de
+    `min_y` en el punto más alto. Estar en el aire no es estar perdida: el suelo
+    no debe moverse.
+    """
+    pet = make_pet(x=400, y=10, min_y=0)
+    pet.start_jump()
+    advance(pet, 6)
+    assert pet.y + SPRITE_H <= 0, "sin esto el test no reproduce el caso"
+
+    pet.set_bounds(0, SCREEN_W, 0, SCREEN_H)
+
+    assert pet.base_y == 10, "saltar alto no puede cambiar el suelo"
+    assert pet.is_jumping is True
+    land(pet)
+    assert pet.y == 10
+
+
+def test_el_rescate_a_mitad_de_salto_conserva_la_parabola():
+    """Si de verdad queda fuera mientras salta, se la reubica sin romper el salto."""
+    pet = make_pet(x=SCREEN_W + 800, y=FLOOR_Y, max_x=DOS_MONITORES_W)
+    pet.start_jump()
+    advance(pet, 3)
+    altura_relativa = pet.base_y - pet.y
+
+    pet.set_bounds(0, SCREEN_W, 0, SCREEN_H)
+
+    assert pet.x == SCREEN_W - SPRITE_W
+    assert pet.base_y == FLOOR_Y, "solo se corrige la X; el suelo seguía siendo válido"
+    assert pet.base_y - pet.y == altura_relativa, "la parábola se conserva"
+    assert pet.is_jumping is True
+    land(pet)
+    assert pet.y == FLOOR_Y
 
 
 def test_la_reubicacion_le_da_un_suelo_dentro_de_la_pantalla():
