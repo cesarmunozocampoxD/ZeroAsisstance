@@ -8,6 +8,7 @@ from pet_logic import PetState
 # ── Configuración ──────────────────────────────────────────────────────────────
 TRANSPARENT_COLOR = "#0c0c0c"   # Color que tkinter tratará como "vacío"
 FRAME_DELAY       = 180         # ms entre frames de animación
+BOUNDS_DELAY      = 1500        # ms entre relecturas de la geometría del escritorio
 SPRITE_WIDTH      = 50         # ancho del sprite en píxeles
 SPRITE_HEIGHT     = 50         # alto del sprite en píxeles
 FLOOR_OFFSET      = 60          # distancia al borde inferior de la pantalla
@@ -26,16 +27,24 @@ class VirtualPet:
         self._setup_window()
         self._load_frames()
 
-        # Dimensiones de pantalla
-        self.screen_w = self.root.winfo_screenwidth()
-        self.screen_h = self.root.winfo_screenheight()
+        # Posición inicial: cuadrante izquierdo del monitor principal. Estas dos
+        # medidas solo valen para colocarla al arrancar; los límites de rebote
+        # salen de `_screen_bounds()`, que sí se relee mientras la app corre.
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+
+        min_x, max_x, min_y, max_y = self._screen_bounds()
 
         # Estado de la mascota, en posición inicial (centro-izquierda, al suelo)
         self.state = PetState(
-            x=self.screen_w // 4,
-            y=self.screen_h - SPRITE_HEIGHT - FLOOR_OFFSET,
-            screen_w=self.screen_w,
+            x=screen_w // 4,
+            y=screen_h - SPRITE_HEIGHT - FLOOR_OFFSET,
             sprite_w=SPRITE_WIDTH,
+            sprite_h=SPRITE_HEIGHT,
+            min_x=min_x,
+            max_x=max_x,
+            min_y=min_y,
+            max_y=max_y,
         )
 
         # Widget de imagen
@@ -52,6 +61,7 @@ class VirtualPet:
         self.label.bind("<Button-3>",        self._show_menu)
 
         self._animate()
+        self._watch_bounds()
         self.root.mainloop()
 
     # ── Configuración de ventana ───────────────────────────────────────────────
@@ -97,6 +107,38 @@ class VirtualPet:
 
         self.root.after(FRAME_DELAY, self._animate)
 
+    # ── Límites de pantalla ────────────────────────────────────────────────────
+    def _screen_bounds(self) -> tuple[int, int, int, int]:
+        """Rectángulo del escritorio virtual: `(min_x, max_x, min_y, max_y)`.
+
+        Abarca todos los monitores como un lienzo único, así que la mascota
+        puede cruzar de pantalla caminando y solo rebota en los extremos
+        exteriores. `winfo_screenwidth()` no sirve aquí: Tk lo fija al abrir el
+        display y no se entera de un cambio de resolución. Las variantes
+        `vroot` se consultan al sistema en cada llamada.
+        """
+        x = self.root.winfo_vrootx()
+        y = self.root.winfo_vrooty()
+        return (
+            x,
+            x + self.root.winfo_vrootwidth(),
+            y,
+            y + self.root.winfo_vrootheight(),
+        )
+
+    def _refresh_bounds(self):
+        """Pasa al estado la geometría actual del escritorio."""
+        self.state.set_bounds(*self._screen_bounds())
+
+    def _watch_bounds(self):
+        """Relee los límites cada `BOUNDS_DELAY` ms.
+
+        Va en su propio temporizador, y no dentro de `_animate()`, para no
+        preguntar al sistema en cada frame de `FRAME_DELAY` ms.
+        """
+        self._refresh_bounds()
+        self.root.after(BOUNDS_DELAY, self._watch_bounds)
+
     # ── Interacción con el ratón ───────────────────────────────────────────────
     def _on_press(self, event):
         self._drag["start_x"] = event.x_root - self.state.x
@@ -112,6 +154,9 @@ class VirtualPet:
     def _on_release(self, event):
         # Clic simple (sin arrastre) → saltar. Soltar nunca cambia la pausa.
         self.state.end_drag()
+        # Puede haber cruzado a otro monitor: los límites se releen ya, sin
+        # esperar al temporizador.
+        self._refresh_bounds()
 
     # ── Menú contextual ────────────────────────────────────────────────────────
     def _toggle_pause(self):

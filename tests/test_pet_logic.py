@@ -22,12 +22,23 @@ from pet_logic import (
 )
 
 SCREEN_W = 1920
+SCREEN_H = 1080
 SPRITE_W = 50
+SPRITE_H = 50
 FLOOR_Y = 700
 
 
-def make_pet(x=400, y=FLOOR_Y, screen_w=SCREEN_W, sprite_w=SPRITE_W):
-    return PetState(x=x, y=y, screen_w=screen_w, sprite_w=sprite_w)
+def make_pet(x=400, y=FLOOR_Y, min_x=0, max_x=SCREEN_W, min_y=0, max_y=SCREEN_H):
+    return PetState(
+        x=x,
+        y=y,
+        sprite_w=SPRITE_W,
+        sprite_h=SPRITE_H,
+        min_x=min_x,
+        max_x=max_x,
+        min_y=min_y,
+        max_y=max_y,
+    )
 
 
 def advance(pet, frames):
